@@ -1,0 +1,107 @@
+#!/bin/sh
+
+########################################################
+#
+#       Check certificates inside a java keystore
+#
+########################################################
+TIMEOUT="timeout 10s"
+KEYTOOL="$TIMEOUT keytool"
+WARNING_IN_DAYS="30"
+CRITICAL_IN_DAYS="15"
+KEYSTORE=""
+PASSWORD=""
+NAME=""
+RETURN_CODE=0
+
+ARGS=`getopt -o "p:k:w:c:a:" -l "password:,keystore:,warning:,critical:,name:" -n "$0" -- "$@"`
+
+function usage {
+        echo "Usage: $0 --keystore <keystore> [--password <password>] [--warning <number of days until expiry>] [--critical <number of days until expiry>]"
+        exit
+}
+
+function start {
+        CURRENT=`date +%s`
+
+        WARNING=$(($CURRENT + ($WARNING_IN_DAYS*24*60*60)))
+        CRITICAL=$(($CURRENT + ($CRITICAL_IN_DAYS*24*60*60)))
+
+        if [ $WARNING -le $CURRENT ]; then
+                echo "[ERROR] Invalid warning days."
+                exit 1
+        fi
+
+        if [ $CRITICAL -le $CURRENT ]; then
+                echo "[ERROR] Invalid critical days."
+                exit 1
+        fi
+
+#       echo "Looking for certificates inside the keystore $(basename $KEYSTORE), WARNING: $WARNING_IN_DAYS day(s), CRITICAL: $CRITICAL_IN_DAYS day(s)..."
+
+        $KEYTOOL -list -v -keystore "$KEYSTORE"  $PASSWORD 2>&1 > /dev/null
+
+        if [ $? -gt 0 ]; then
+                echo "Error opening the keystore."
+                exit 1
+        fi
+
+        CERTS="$($KEYTOOL -list -v -keystore "$KEYSTORE"  $PASSWORD | grep $NAME | awk '{print $3}')"
+#        echo " Hi $NAME "
+
+                # Iterate through all the certificate alias
+                EXPIRACY=`$KEYTOOL -list -v -keystore "$KEYSTORE"  $PASSWORD -alias $NAME | grep Valid`
+                UNTIL=`$KEYTOOL -list -v -keystore "$KEYSTORE"  $PASSWORD -alias $NAME | grep Valid | perl -ne 'if(/until: (.*?)\n/) { print "$1\n"; }'`
+                UNTIL_SECONDS=`date -d "$UNTIL" +%s`
+                REMAINING_DAYS=$(( ($UNTIL_SECONDS -  $(date +%s)) / 60 / 60 / 24 ))
+
+                if [ $WARNING -le $UNTIL_SECONDS ]; then
+                        echo "[OK] Expires in '$UNTIL' ($REMAINING_DAYS day(s) remaining)."
+                elif [ $WARNING -ge $UNTIL_SECONDS ] && [ $CRITICAL -le $UNTIL_SECONDS ]; then
+#                       echo "[WARNING] Certificate $ALIAS expires in '$UNTIL' ($REMAINING_DAYS day(s) remaining)."
+
+                        if [ $RETURN_CODE -ne 2 ]; then
+                                RETURN_CODE=1
+                        fi
+                else
+                        echo "[CRITICAL] Expired on '$UNTIL' ($REMAINING_DAYS day(s) ago)."
+                        RETURN_CODE=2
+        #               echo $RETURN_CODE
+                fi
+#       done <<< "$CERTS"
+
+#       echo "Finished..."
+        exit $RETURN_CODE
+}
+
+eval set -- "$ARGS"
+
+while true
+do
+        case "$1" in
+                -p|--password)
+                        if [ -n "$2" ]; then PASSWORD=" -storepass $2"; else echo "Invalid password"; exit 1; fi
+                        shift 2;;
+                -k|--keystore)
+                        if [ ! -f "$2" ]; then echo "Keystore not found: $1"; exit 1; else KEYSTORE=$2; fi
+                        shift 2;;
+                -w|--warning)
+                        if [ -n "$2" ] && [[ $2 =~ ^[0-9]+$ ]]; then WARNING_IN_DAYS=$2; else echo "Invalid warning"; exit 1; fi
+                        shift 2;;
+                -c|--critical)
+                        if [ -n "$2" ] && [[ $2 =~ ^[0-9]+$ ]]; then CRITICAL_IN_DAYS=$2; else echo "Invalid critical"; exit 1; fi
+                        shift 2;;
+                -a|--name)
+                     if [ -n "$2" ]; then NAME=$2; else echo " Please provide a name"; exit 1; fi
+                         shift 2;;
+                --)
+                        shift
+                        break;;
+        esac
+done
+
+if [ -n "$KEYSTORE" ]; then
+        start
+else
+        usage
+fi
